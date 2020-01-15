@@ -13,8 +13,11 @@ function main() {
     INPUT_NAME="${REGISTRY_NO_PROTOCOL}/${INPUT_NAME}"
   fi
 
-  translateDockerTag
-  DOCKERNAME="${INPUT_NAME}:${TAG}"
+  if uses "${INPUT_TAGS}"; then
+    TAGS=$(echo "${INPUT_TAGS}" | sed "s/,/ /g")
+  else
+    translateDockerTag
+  fi
 
   if uses "${INPUT_WORKDIR}"; then
     changeWorkingDirectory
@@ -22,6 +25,8 @@ function main() {
 
   echo ${INPUT_PASSWORD} | docker login -u ${INPUT_USERNAME} --password-stdin ${INPUT_REGISTRY}
 
+  FIRST_TAG=$(echo $TAGS | cut -d ' ' -f1)
+  DOCKERNAME="${INPUT_NAME}:${FIRST_TAG}"
   BUILDPARAMS=""
   CONTEXT="."
 
@@ -37,13 +42,13 @@ function main() {
   if usesBoolean "${INPUT_CACHE}"; then
     useBuildCache
   fi
-
   if usesBoolean "${INPUT_SNAPSHOT}"; then
-    pushWithSnapshot
-  else
-    pushWithoutSnapshot
+    useSnapshot
   fi
-  echo "::set-output name=tag::${TAG}"
+
+  push
+
+  echo "::set-output name=tag::${FIRST_TAG}"
   DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' ${DOCKERNAME})
   echo "::set-output name=digest::${DIGEST}"
 
@@ -64,18 +69,18 @@ function isPartOfTheName() {
 function translateDockerTag() {
   local BRANCH=$(echo ${GITHUB_REF} | sed -e "s/refs\/heads\///g" | sed -e "s/\//-/g")
   if hasCustomTag; then
-    TAG=$(echo ${INPUT_NAME} | cut -d':' -f2)
+    TAGS=$(echo ${INPUT_NAME} | cut -d':' -f2)
     INPUT_NAME=$(echo ${INPUT_NAME} | cut -d':' -f1)
   elif isOnMaster; then
-    TAG="latest"
+    TAGS="latest"
   elif isGitTag && usesBoolean "${INPUT_TAG_NAMES}"; then
-    TAG=$(echo ${GITHUB_REF} | sed -e "s/refs\/tags\///g")
+    TAGS=$(echo ${GITHUB_REF} | sed -e "s/refs\/tags\///g")
   elif isGitTag; then
-    TAG="${BRANCH}"
+    TAGS="latest"
   elif isPullRequest; then
-    TAG="${GITHUB_SHA}"
+    TAGS="${GITHUB_SHA}"
   else
-    TAG="${BRANCH}"
+    TAGS="${BRANCH}"
   fi;
 }
 
@@ -124,25 +129,34 @@ function usesBoolean() {
   [ ! -z "${1}" ] && [ "${1}" = "true" ]
 }
 
-function pushWithSnapshot() {
-  local LAST_TAG=$(echo ${GITHUB_REF} | sed -e "s/refs\/heads\///g" | sed -e "s/refs\/tags\///g")
-  local LAST_VER=$(git describe --tags $(git rev-list --tags --max-count=1))
+function useSnapshot() {
+  local BRANCH=$(echo ${GITHUB_REF} | sed -e "s/refs\/heads\///g" | sed -e "s/refs\/tags\///g")
+  local LAST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
   local COMMITS_AHEAD=$(git rev-list ${LAST_VER}.. --count)
-  local IMAGE_TAG1="${LAST_TAG}" 
-  local IMAGE_TAG2="${LAST_TAG}-${LAST_VER}.${COMMITS_AHEAD}"
-  if [[ ${COMMITS_AHEAD} = "0" ]]; then
-    docker build ${INPUT_BUILDOPTIONS} ${BUILDPARAMS} -t ${DOCKERNAME} -t ${INPUT_NAME}:${IMAGE_TAG1} ${CONTEXT}
-    docker push ${INPUT_NAME}:${IMAGE_TAG1}
-  else
-    docker build ${INPUT_BUILDOPTIONS} ${BUILDPARAMS} -t ${DOCKERNAME} -t ${INPUT_NAME}:${IMAGE_TAG2} ${CONTEXT}
-    docker push ${INPUT_NAME}:${IMAGE_TAG2}
-  fi
-}
-##echo ::set-output name=snapshot-tag::"${SNAPSHOT_TAG}"
+  local SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-6)
 
-function pushWithoutSnapshot() {
-  docker build ${INPUT_BUILDOPTIONS} ${BUILDPARAMS} -t ${DOCKERNAME} ${CONTEXT}
-  docker push ${DOCKERNAME}
+  local IMAGE_TAG1="${LAST_TAG}"
+  local IMAGE_TAG2="${LAST_TAG}-${BRANCH}.${COMMITS_AHEAD}-${SHORT_SHA}"
+  if [[ ${COMMITS_AHEAD} = "0" ]]; then
+    TAGS="${TAGS} ${IMAGE_TAG1}"
+  else
+    TAGS="${TAGS} ${IMAGE_TAG2}"
+  fi
+  echo ::set-output name=snapshot-tag::"${SNAPSHOT_TAG}"
+}
+
+function push() {
+  local BUILD_TAGS=""
+  for TAG in ${TAGS}
+  do
+    BUILD_TAGS="${BUILD_TAGS}-t ${INPUT_NAME}:${TAG} "
+  done
+  docker build ${INPUT_BUILDOPTIONS} ${BUILDPARAMS} ${BUILD_TAGS} ${CONTEXT}
+
+  for TAG in ${TAGS}
+  do
+    docker push "${INPUT_NAME}:${TAG}"
+  done
 }
 
 main
