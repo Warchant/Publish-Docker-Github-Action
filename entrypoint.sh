@@ -130,7 +130,7 @@ function usesBoolean() {
 }
 
 function useSnapshot() {
-  local BRANCH=$(echo ${GITHUB_REF} | sed -e "s/refs\/heads\///g" | sed -e "s/refs\/tags\///g")
+  local BRANCH=$(echo ${GITHUB_REF} | sed -e "s/refs\/heads\///g" | sed -e "s/\//-/g")
   local LAST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
   local COMMITS_AHEAD=$(git rev-list ${LAST_TAG}.. --count)
   local SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-6)
